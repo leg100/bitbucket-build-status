@@ -1,3 +1,2 @@
-google-cloud-kms
-google-cloud-storage
+google-cloud-secret-manager
 requests
