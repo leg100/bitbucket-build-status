@@ -30,63 +30,31 @@ I got a lot of help from reading Seth Vargo's [Secrets in Serverless blog post](
 
 These instructions apply to both Github and Bitbucket. It's recommended that you set the following environment variables first:
 
-* `GOOGLE_CLOUD_PROJECT`: the project in which cloud resources are created, e.g. `my-uniquely-named-project`
-* `CREDENTIALS_BUCKET`: the GCS bucket in which to store encrypted credentials, e.g. `my-uniquely-named-credentials-bucket`
-* `BUILD_STATUS_KEYRING`: the name of the KMS keyring, e.g. `production`
-* `BUILD_STATUS_KEY`: the name of the KMS key, e.g. `cloud-build-status`
-
 ### Setup Cloud Build
 
 Follow these [instructions](https://cloud.google.com/cloud-build/docs/running-builds/automate-builds). Once you've done so, you'll have:
 
-  * A Github or Bitbucket repository mirrored to Cloud Source Repositories
-  * A Cloud Build config file (e.g. `cloudbuild.yaml`) in the repository
-  * A Cloud Build trigger to run a build when a commit is pushed
+* A Github or Bitbucket repository mirrored to Cloud Source Repositories
+* A Cloud Build config file (e.g. `cloudbuild.yaml`) in the repository
+* A Cloud Build trigger to run a build when a commit is pushed
 
 Make a note of the Google Cloud project you decide to use. From hereon in, all resources are configured in the context of this project.
 
+### Enable Google Cloud API and Create Service Account
 
-### Enable Google Cloud APIs
-
-If you have not previously used Cloud Functions, Cloud KMS, or Cloud Storage, enable the APIs on your Google Cloud Project:
-
-```bash
-gcloud services enable \
-  cloudfunctions.googleapis.com \
-  cloudkms.googleapis.com \
-  storage-component.googleapis.com
-```
-
-### Create KMS keys
-
-Create KMS keyring and key:
+If you have not previously used Cloud Functions or Secret Manager, enable the APIs on your Google Cloud Project and create the required service account and role binding:
 
 ```bash
-gcloud kms keyrings create ${BUILD_STATUS_KEYRING} --location global
-
-gcloud kms keys create ${BUILD_STATUS_KEY} \
-  --location global \
-  --keyring ${BUILD_STATUS_KEYRING} \
-  --purpose encryption
-```
-
-### Create Storage Bucket
-
-Create Google Cloud Storage bucket in which to store encrypted credentials (the ciphertext):
-
-```bash
-gsutil mb gs://${CREDENTIALS_BUCKET}/
-```
-
-Next, change the default bucket permissions. By default, anyone with access to the project has access to the data in the bucket. You must do this before storing any data in the bucket!
-
-```bash
-gsutil defacl set private gs://${CREDENTIALS_BUCKET}/
+make init
 ```
 
 ### Setup Credentials
 
 The function needs credentials with which to authenticate with the Github or Bitbucket API. The credentials need not be the same as that used for mirroring.
+
+```bash
+make create
+```
 
 Note: this step can be repeated whenever you want to rotate the credentials. There is a make task to perform the rotation: `make rotate`.
 
@@ -94,74 +62,16 @@ Note: this step can be repeated whenever you want to rotate the credentials. The
 
 Nominate a Github user account for this purpose. Create a [personal access token](https://github.com/settings/tokens). Assign it the `repo:status` scope.
 
-Encrypt the username and token and upload the resulting ciphertext to the bucket:
-
-```bash
-echo '{"username": "username", "password": "********"}' | \
-  gcloud kms encrypt \
-  --location global \
-  --keyring=${BUILD_STATUS_KEYRING} \
-  --key=${BUILD_STATUS_KEY} \
-  --ciphertext-file=- \
-  --plaintext-file=- | \
-  gsutil cp - gs://${CREDENTIALS_BUCKET}/github
-```
-
 #### Bitbucket
 
 Nominate a Bitbucket user account for this purpose.  Create an [app password](https://confluence.atlassian.com/bitbucket/app-passwords-828781300.html). Assign it the `repository:read` scope.
-
-Encrypt the username and app password and upload the resulting ciphertext to the bucket:
-
-```bash
-echo '{"username": "username", "password": "********"}' | \
-  gcloud kms encrypt \
-  --location global \
-  --keyring=${BUILD_STATUS_KEYRING} \
-  --key=${BUILD_STATUS_KEY} \
-  --ciphertext-file=- \
-  --plaintext-file=- | \
-  gsutil cp - gs://${CREDENTIALS_BUCKET}/bitbucket
-```
-
-### Configure IAM
-
-Create a new service account for use by the Cloud Function:
-
-```bash
-gcloud iam service-accounts create cloud-build-status
-```
-
-Grant permissions to read from the bucket:
-
-```bash
-gsutil iam ch serviceAccount:cloud-build-status@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com:legacyBucketReader,legacyObjectReader gs://${CREDENTIALS_BUCKET}
-```
-
-Grant minimal permissions to decrypt data using the KMS key created above:
-
-```bash
-gcloud kms keys add-iam-policy-binding ${BUILD_STATUS_KEY} \
-    --location global \
-    --keyring ${BUILD_STATUS_KEYRING} \
-    --member "serviceAccount:cloud-build-status@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com" \
-    --role roles/cloudkms.cryptoKeyDecrypter
-```
-
-The function now has the permissions to both read the ciphertext from the bucket as well as to decrypt the ciphertext.
 
 ## Deploy
 
 Deploy the function:
 
 ```bash
-gcloud functions deploy cloud-build-status \
-    --source . \
-    --runtime python37 \
-    --entry-point build_status \
-    --service-account cloud-build-status@${GOOGLE_CLOUD_PROJECT}.iam.gserviceaccount.com \
-    --set-env-vars KMS_CRYPTO_KEY_ID=projects/${GOOGLE_CLOUD_PROJECT}/locations/global/keyRings/${BUILD_STATUS_KEYRING}/cryptoKeys/${BUILD_STATUS_KEY},CREDENTIALS_BUCKET=${CREDENTIALS_BUCKET} \
-    --trigger-topic=cloud-builds
+make deploy
 ```
 
 ## Test
